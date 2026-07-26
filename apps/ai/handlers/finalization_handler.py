@@ -1,10 +1,13 @@
 import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from handlers.calllog_handler import build_call_log_payload, post_call_log_with_retry
 from utils.logger import logger, redact_sensitive
+
+if TYPE_CHECKING:
+    from handlers.langfuse_handler import LangfuseCallTracer
 
 
 class CallFinalizer:
@@ -17,6 +20,7 @@ class CallFinalizer:
         recording_path: str | None,
         transcript_reader: Callable[[], list[dict[str, Any]]],
         post_call_log: Callable[[dict[str, Any]], Awaitable[Any]] | None = None,
+        langfuse_tracer: "LangfuseCallTracer | None" = None,
     ):
         self._config = config
         self._call_context = call_context
@@ -24,6 +28,7 @@ class CallFinalizer:
         self._recording_path = recording_path
         self._transcript_reader = transcript_reader
         self._post_call_log = post_call_log or post_call_log_with_retry
+        self._langfuse_tracer = langfuse_tracer
         self._lock = asyncio.Lock()
         self._completed = False
 
@@ -50,5 +55,22 @@ class CallFinalizer:
                 payload["evaluatedData"] = []
             if self._config.get("retention_days") is not None:
                 payload["metadata"]["retentionDays"] = self._config.get("retention_days")
+
+            # -- Langfuse: finalise trace with evaluation scores --
+            if self._langfuse_tracer is not None:
+                try:
+                    self._langfuse_tracer.finalize(
+                        transcripts=payload.get("transcripts", []),
+                        extracted_data=payload.get("extractedData", []),
+                        evaluated_data=payload.get("evaluatedData", []),
+                        duration_seconds=payload.get("durationSeconds", 0),
+                        status=payload.get("status", "COMPLETED"),
+                    )
+                except Exception as langfuse_error:
+                    logger.warning(
+                        "[langfuse] finalization scoring failed: {}",
+                        redact_sensitive(str(langfuse_error)),
+                    )
+
             await self._post_call_log(payload)
             logger.info("[CALL_LOG] finalized call {}", redact_sensitive({"callId": payload["callId"]}))

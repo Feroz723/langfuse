@@ -18,6 +18,7 @@ from handlers.call_metadata_collector import CallMetadataCollector, build_metada
 from handlers.calllog_handler import flush_call_log_queue
 from handlers.config_handler import get_config
 from handlers.finalization_handler import CallFinalizer
+from handlers.langfuse_handler import LangfuseCallTracer
 from handlers.livekit_handler import recording_path as build_recording_path, start_recording
 from handlers.live_transcript_publisher import LiveTranscriptPublisher
 from handlers.http_tool_handler import build_http_tool_instructions, call_http_tool, parse_http_tool_arguments
@@ -267,6 +268,7 @@ class Assistant(Agent):
         config: dict,
         call_context: dict,
         transcript_collector: TranscriptCollector | None = None,
+        langfuse_tracer: LangfuseCallTracer | None = None,
     ):
         super().__init__(
             instructions=system_prompt,
@@ -276,6 +278,7 @@ class Assistant(Agent):
         self._call_context = call_context
         self._metadata_collector = CallMetadataCollector(config)
         self._transcript_collector = transcript_collector
+        self._langfuse_tracer = langfuse_tracer
 
     def _rag_enabled(self) -> bool:
         return bool(self._config.get("use_rag"))
@@ -288,6 +291,18 @@ class Assistant(Agent):
         )
 
     async def on_user_turn_completed(self, turn_ctx, new_message) -> None:
+        # Trace user STT input via Langfuse
+        user_text = new_message.text_content if hasattr(new_message, "text_content") else ""
+        if callable(user_text):
+            user_text = user_text()
+        user_text = str(user_text or "").strip()
+        if self._langfuse_tracer and user_text:
+            self._langfuse_tracer.trace_stt(
+                model=self._config.get("stt_model", ""),
+                language=self._config.get("agent_language", "en-US"),
+                transcript=user_text,
+            )
+
         if not self._rag_enabled():
             return
 
@@ -296,10 +311,7 @@ class Assistant(Agent):
             logger.warning("[rag] skipped retrieval because agent_id is missing")
             return
 
-        query = new_message.text_content if hasattr(new_message, "text_content") else ""
-        if callable(query):
-            query = query()
-        query = str(query or "").strip()
+        query = user_text
         if not query:
             return
 
@@ -319,6 +331,14 @@ class Assistant(Agent):
         if not context:
             logger.info(f"[rag] no context returned for agent={agent_id}")
             return
+
+        # Trace RAG retrieval via Langfuse
+        if self._langfuse_tracer:
+            self._langfuse_tracer.trace_rag_retrieval(
+                agent_id=agent_id,
+                query=query,
+                context=context,
+            )
 
         turn_ctx.add_message(
             role="system",
@@ -341,10 +361,18 @@ class Assistant(Agent):
             if chunk_text:
                 chunks.append(chunk_text)
             yield chunk
+        full_text = "".join(chunks)
         if self._transcript_collector is not None:
             self._transcript_collector.on_agent_transcription_final(
-                "".join(chunks),
+                full_text,
                 datetime.now(timezone.utc),
+            )
+        # Trace agent TTS output via Langfuse
+        if self._langfuse_tracer and full_text:
+            self._langfuse_tracer.trace_tts(
+                model=self._config.get("tts_model", ""),
+                voice=self._config.get("voice", ""),
+                text=full_text,
             )
 
     @function_tool
@@ -411,7 +439,16 @@ class Assistant(Agent):
             config=self._config,
             call_context=self._call_context,
         )
-        return json.dumps(result.get("data", result), ensure_ascii=False)
+        result_str = json.dumps(result.get("data", result), ensure_ascii=False)
+        # Trace HTTP tool call via Langfuse
+        if self._langfuse_tracer:
+            self._langfuse_tracer.trace_tool_call(
+                tool_type="http",
+                tool_name=tool_name,
+                arguments=arguments,
+                result=result_str,
+            )
+        return result_str
 
     @function_tool
     async def call_mcp_tool(self, connection_id: str, tool_name: str, arguments_json: str = "{}") -> str:
@@ -431,7 +468,16 @@ class Assistant(Agent):
             config=self._config,
             call_context=self._call_context,
         )
-        return json.dumps(result.get("data", result), ensure_ascii=False)
+        result_str = json.dumps(result.get("data", result), ensure_ascii=False)
+        # Trace MCP tool call via Langfuse
+        if self._langfuse_tracer:
+            self._langfuse_tracer.trace_tool_call(
+                tool_type="mcp",
+                tool_name=f"{connection_id}/{tool_name}",
+                arguments=arguments,
+                result=result_str,
+            )
+        return result_str
 
 
 async def entrypoint(ctx: JobContext):
@@ -525,12 +571,17 @@ async def entrypoint(ctx: JobContext):
     transcript_collector = TranscriptCollector(
         on_item=live_transcript_publisher.publish_transcript
     ).attach(session)
+    # -- Langfuse trace initialisation --
+    langfuse_tracer = LangfuseCallTracer.create(config, call_context)
+    langfuse_tracer.start_session()
+
     system_prompt = build_agent_instructions(config)
     agent = Assistant(
         system_prompt=system_prompt,
         config=config,
         call_context=call_context,
         transcript_collector=transcript_collector,
+        langfuse_tracer=langfuse_tracer,
     )
 
     @ctx.room.on("data_received")
@@ -595,6 +646,7 @@ async def entrypoint(ctx: JobContext):
         started_at=call_start_time,
         recording_path=recording_path,
         transcript_reader=transcript_collector.read,
+        langfuse_tracer=langfuse_tracer,
     )
     shutdown_reason = "session_shutdown"
 
