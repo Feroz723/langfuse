@@ -9,8 +9,8 @@
     "url": "git+https://github.com/allgpt-co/QuickVoice.git"
   },
   "scripts": {
-    "build": "turbo run build",
-    "dev": "task up:dev",
+    "build": "node api.js && turbo run build",
+    "dev": "node api.js && task up:dev",
     "dev:turbo": "turbo run dev",
     "lint": "turbo run lint",
     "format": "prettier --write \"**/*.{js,mjs,json,md,ts,tsx}\"",
