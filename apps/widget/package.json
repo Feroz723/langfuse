@@ -5,7 +5,7 @@
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --format=iife --global-name=QuickVoiceWidget --outfile=dist/quickvoice-widget.js --minify --sourcemap",
+    "build": "node init && esbuild src/index.ts --bundle --format=iife --global-name=QuickVoiceWidget --outfile=dist/quickvoice-widget.js --minify --sourcemap",
     "check-types": "tsc --noEmit",
     "lint": "tsc --noEmit"
   },

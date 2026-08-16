@@ -5,9 +5,9 @@
   "private": true,
   "license": "AGPL-3.0-only",
   "scripts": {
-    "dev": "next dev",
-    "build": "pnpm generate:mcp && next build",
-    "start": "next start",
+    "dev": "node init && next dev",
+    "build": "node init && pnpm generate:mcp && next build",
+    "start": "node init && next start",
     "lint": "eslint --max-warnings=0",
     "check-types": "tsc --noEmit",
     "generate:mcp": "tsx scripts/generate-mcp-reference.ts"
