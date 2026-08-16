@@ -8,10 +8,10 @@
   "type": "module",
   "main": "dist/src/index.js",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "build": "tsc",
+    "dev": "node init && tsx watch src/index.ts",
+    "build": "node init && tsc",
     "lint": "tsc --noEmit --pretty false",
-    "start": "node dist/src/index.js",
+    "start": "node init && node dist/src/index.js",
     "check-types": "tsc --noEmit",
     "test": "tsx --test tests/**/*.test.ts",
     "seed": "tsx prisma/seed.ts",
